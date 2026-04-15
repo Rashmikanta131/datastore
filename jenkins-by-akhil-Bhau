@@ -16,17 +16,18 @@ pipeline {
             steps {
                 echo "-------- Cloning Repository --------"
                 git branch: 'master', url: 'https://github.com/Rashmikanta131/DataStore.git'
-                stash name: 'source-code'
             }
         }
 
         stage("Maven Build & Test") {
             agent any
             steps {
-                unstash 'source-code'
                 sh '''
+                    echo "-------- Cleaning old target directory --------"
+                    rm -rf target || true
                     echo "-------- Running Maven Build & Test inside Docker --------"
                     docker run --rm \
+                        --user "$(id -u):$(id -g)" \
                         -v "$(pwd)":/app \
                         -v "$HOME/.m2":/root/.m2 \
                         -w /app \
