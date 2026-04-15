@@ -7,6 +7,7 @@ pipeline {
 
     environment {
         DOCKERHUB_CREDENTIALS = credentials('dockerhub')
+        SONAR_SCANNER_HOME = tool 'sonar-scanner'
     }
 
     stages {
@@ -35,6 +36,34 @@ pipeline {
                         bash -c "mvn clean package && mvn test"
                     echo "-------- Build & Test Completed --------"
                 '''
+            }
+        }
+
+        stage("SonarQube Analysis") {
+            agent any
+            steps {
+                withSonarQubeEnv('sonarqube-server') {
+                    sh '''
+                        echo "-------- Running SonarQube Analysis --------"
+                        $SONAR_SCANNER_HOME/bin/sonar-scanner \
+                            -Dsonar.projectKey=datastore \
+                            -Dsonar.projectName=DataStore \
+                            -Dsonar.sources=src/main/java \
+                            -Dsonar.java.binaries=target/classes \
+                            -Dsonar.tests=src/test/java \
+                            -Dsonar.junit.reportPaths=target/surefire-reports
+                        echo "-------- SonarQube Analysis Completed --------"
+                    '''
+                }
+            }
+        }
+
+        stage("SonarQube Quality Gate") {
+            agent none
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
             }
         }
 
