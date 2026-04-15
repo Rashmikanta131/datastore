@@ -11,67 +11,57 @@ pipeline {
 
     stages {
 
-        stage("Checkout & Build") {
-            agent {
-                docker {
-                    image 'maven:3.9.6-eclipse-temurin-17'
-                    args '-v $HOME/.m2:/root/.m2'
-                }
+        stage("Checkout") {
+            agent any
+            steps {
+                echo "-------- Cloning Repository --------"
+                git branch: 'master', url: 'https://github.com/Rashmikanta131/DataStore.git'
+                stash name: 'source-code'
             }
-            stages {
-                stage("Checkout") {
-                    steps {
-                        echo "-------- Cloning Repository --------"
-                        git branch: 'master', url: 'https://github.com/Rashmikanta131/DataStore.git'
-                    }
-                }
+        }
 
-                stage("Maven Build") {
-                    steps {
-                        sh '''
-                            echo "-------- Building Application --------"
-                            mvn clean package -DskipTests
-                            echo "-------- Build Completed --------"
-                        '''
-                    }
-                }
+        stage("Maven Build & Test") {
+            agent any
+            steps {
+                unstash 'source-code'
+                sh '''
+                    echo "-------- Running Maven Build & Test inside Docker --------"
+                    docker run --rm \
+                        -v "$(pwd)":/app \
+                        -v "$HOME/.m2":/root/.m2 \
+                        -w /app \
+                        maven:3.9.6-eclipse-temurin-17 \
+                        bash -c "mvn clean package && mvn test"
+                    echo "-------- Build & Test Completed --------"
+                '''
+            }
+        }
 
-                stage("Maven Test") {
-                    steps {
-                        sh '''
-                            echo "-------- Running Test Cases --------"
-                            mvn test
-                            echo "-------- Tests Completed --------"
-                        '''
-                    }
-                }
+        stage("Artifact Upload to S3") {
+            agent any
+            steps {
+                sh '''
+                    echo "-------- Uploading Artifact to S3 --------"
+                    aws s3 cp target/*.jar s3://data-store-bkt21/
+                    echo "-------- Upload Complete --------"
+                '''
+            }
+        }
 
-                stage("Artifact Upload to S3") {
-                    steps {
-                        sh '''
-                            echo "-------- Uploading Artifact to S3 --------"
-                            aws s3 cp target/*.jar s3://data-store-bkt21/
-                            echo "-------- Upload Complete --------"
-                        '''
-                        stash includes: 'target/*.jar, Dockerfile', name: 'build-artifacts'
-                    }
-                }
+        stage("Docker Build") {
+            agent any
+            steps {
+                sh '''
+                    echo "-------- Building Docker Image --------"
+                    docker build -t datastore:${App_Version} .
+                    echo "-------- Docker Build Complete --------"
+                '''
             }
         }
 
         stage("Docker Stages") {
             agent any
             stages {
-                stage("Docker Build") {
-                    steps {
-                        unstash 'build-artifacts'
-                        sh '''
-                            echo "-------- Building Docker Image --------"
-                            docker build -t datastore:${App_Version} .
-                            echo "-------- Docker Build Complete --------"
-                        '''
-                    }
-                }
 
                 stage("Docker Scan (Trivy)") {
                     steps {
