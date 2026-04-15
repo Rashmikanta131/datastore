@@ -1,130 +1,130 @@
 pipeline {
-    agent any
+    agent any
 
-    parameters {
-        string(name: "App_Version", description: "Provide application version")
-    }
+    parameters {
+        string(name: "App_Version", description: "Provide application version")
+    }
 
-    environment {
-        DOCKERHUB_CREDENTIALS = credentials('dockerhub')
-    }
+    environment {
+        DOCKERHUB_CREDENTIALS = credentials('dockerhub')
+    }
 
-    stages {
+    stages {
 
-        stage("Checkout") {
-            steps {
-                echo "-------- Cloning Repository --------"
-                git branch: 'master', url: 'https://github.com/Rashmikanta131/DataStore.git'
-            }
-        }
+        stage("Checkout") {
+            steps {
+                echo "-------- Cloning Repository --------"
+                git branch: 'master', url: 'https://github.com/Rashmikanta131/DataStore.git'
+            }
+        }
 
-        stage("Maven Build") {
-            steps {
-                sh '''
-                    echo "-------- Building Application --------"
-                    mvn clean package -DskipTests
-                    echo "-------- Build Completed --------"
-                '''
-            }
-        }
+        stage("Maven Build") {
+            steps {
+                sh '''
+                    echo "-------- Building Application --------"
+                    mvn clean package -DskipTests
+                    echo "-------- Build Completed --------"
+                '''
+            }
+        }
 
-        stage("Maven Test") {
-            steps {
-                sh '''
-                    echo "-------- Running Test Cases --------"
-                    mvn test
-                    echo "-------- Tests Completed --------"
-                '''
-            }
-        }
+        stage("Maven Test") {
+            steps {
+                sh '''
+                    echo "-------- Running Test Cases --------"
+                    mvn test
+                    echo "-------- Tests Completed --------"
+                '''
+            }
+        }
 
-        stage("Artifact Upload to S3") {
-            steps {
-                sh '''
-                    echo "-------- Uploading Artifact to S3 --------"
-                    aws s3 cp target/*.jar s3://data-store-bkt21/
-                    echo "-------- Upload Complete --------"
-                '''
-            }
-        }
+        stage("Artifact Upload to S3") {
+            steps {
+                sh '''
+                    echo "-------- Uploading Artifact to S3 --------"
+                    aws s3 cp target/*.jar s3://data-store-bkt21/
+                    echo "-------- Upload Complete --------"
+                '''
+            }
+        }
 
-        stage("Docker Build") {
-            steps {
-                sh '''
-                    echo "-------- Building Docker Image --------"
-                    docker build -t datastore:${App_Version} .
-                    echo "-------- Docker Build Complete --------"
-                '''
-            }
-        }
+        stage("Docker Build") {
+            steps {
+                sh '''
+                    echo "-------- Building Docker Image --------"
+                    docker build -t datastore:${App_Version} .
+                    echo "-------- Docker Build Complete --------"
+                '''
+            }
+        }
 
-        stage("Docker Scan (Trivy)") {
-         steps {
-          sh '''
-            echo "-------- Scanning Image --------"
-            trivy image --scanners vuln --skip-db-update datastore:${App_Version} || true
-            echo "-------- Scan Completed --------"
-          '''
-            }
-         }
+        stage("Docker Scan (Trivy)") {
+            steps {
+                sh '''
+                    echo "-------- Scanning Image --------"
+                    trivy image --scanners vuln --skip-db-update datastore:${App_Version} || true
+                    echo "-------- Scan Completed --------"
+                '''
+            }
+        }
 
-        stage("Docker Tag") {
-            steps {
-                sh '''
-                    echo "-------- Tagging Image --------"
-                    docker tag datastore:${App_Version} rashmikanta/datastore:${App_Version}
-                    echo "-------- Tagging Complete --------"
-                '''
-            }
-        }
+        stage("Docker Tag") {
+            steps {
+                sh '''
+                    echo "-------- Tagging Image --------"
+                    docker tag datastore:${App_Version} rashmikanta/datastore:${App_Version}
+                    echo "-------- Tagging Complete --------"
+                '''
+            }
+        }
 
-        stage("Docker Login & Push") {
-            steps {
-                sh '''
-                    echo "-------- Logging into DockerHub --------"
-                    echo $DOCKERHUB_CREDENTIALS_PSW | docker login -u $DOCKERHUB_CREDENTIALS_USR --password-stdin
-                    echo "-------- Login Successful --------"
+        stage("Docker Login & Push") {
+            steps {
+                sh '''
+                    echo "-------- Logging into DockerHub --------"
+                    echo $DOCKERHUB_CREDENTIALS_PSW | docker login -u $DOCKERHUB_CREDENTIALS_USR --password-stdin
+                    echo "-------- Login Successful --------"
 
-                    echo "-------- Pushing Image --------"
-                    docker push rashmikanta/datastore:${App_Version}
-                    echo "-------- Push Completed --------"
-                '''
-            }
-        }
+                    echo "-------- Pushing Image --------"
+                    docker push rashmikanta/datastore:${App_Version}
+                    echo "-------- Push Completed --------"
+                '''
+            }
+        }
 
-        stage("Cleanup") {
-            steps {
-                sh '''
-                    echo "-------- Cleaning Docker Images --------"
-                    docker system prune -af
-                    echo "-------- Cleanup Done --------"
-                '''
-            }
-        }
+        stage("Cleanup") {
+            steps {
+                sh '''
+                    echo "-------- Cleaning Docker Images --------"
+                    docker system prune -af
+                    echo "-------- Cleanup Done --------"
+                '''
+            }
+        }
 
-        stage("Deployment Approval") {
-            steps {
-                input message: "Do you want to deploy?", ok: "Yes, Deploy"
-            }
-        }
+        stage("Deployment Approval") {
+            steps {
+                input message: "Do you want to deploy?", ok: "Yes, Deploy"
+            }
+        }
 
-        stage("Trigger Deployment Job") {
-            steps {
-                build job: "KubernetesDeployment",
-                parameters: [
-                    string(name: "App_Name", value: "datastore-deploy"),
-                    string(name: "App_Version", value: "${App_Version}")
-                ]
-            }
-        }
-    }
+        stage("Trigger Deployment Job") {
+            steps {
+                build job: "KubernetesDeployment",
+                parameters: [
+                    string(name: "App_Name", value: "datastore-deploy"),
+                    string(name: "App_Version", value: "${App_Version}")
+                ]
+            }
+        }
+    }
 
-    post {
-        success {
-            echo "✅ Pipeline executed successfully!"
-        }
-        failure {
-            echo "❌ Pipeline failed. Check logs!"
-        }
-    }
+    post {
+        success {
+            echo "Pipeline executed successfully!"
+        }
+        failure {
+            echo "Pipeline failed. Check logs!"
+        }
+    }
 }
