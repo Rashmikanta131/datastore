@@ -1,0 +1,173 @@
+pipeline {
+    agent none
+
+    parameters {
+        string(name: "App_Version", description: "Provide application version")
+    }
+
+    environment {
+        AWS_ACCOUNT_ID = '362570697704'
+        AWS_REGION = 'ap-south-1'
+        ECR_REPO = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/datastore"
+    }
+
+    stages {
+
+        stage("Checkout") {
+            agent any
+            steps {
+                echo "-------- Cloning Repository --------"
+                git branch: 'master', url: 'https://github.com/Rashmikanta131/datastore.git'
+            }
+        }
+
+        stage("Maven Build & Test") {
+            agent any
+            steps {
+                sh '''
+                    echo "-------- Cleaning old target directory --------"
+                    rm -rf target || true
+                    echo "-------- Running Maven Build & Test inside Docker --------"
+                    docker run --rm \
+                        --user "$(id -u):$(id -g)" \
+                        -v "$(pwd)":/app \
+                        -v "$HOME/.m2":/root/.m2 \
+                        -w /app \
+                        maven:3.9.6-eclipse-temurin-17 \
+                        bash -c "mvn clean package && mvn test"
+                    echo "-------- Build & Test Completed --------"
+                '''
+            }
+        }
+
+        stage("SonarQube Analysis") {
+            agent any
+            environment {
+                SONAR_SCANNER_HOME = tool 'sonar-scanner'
+            }
+            steps {
+                withSonarQubeEnv('sonarqube-server') {
+                    sh '''
+                        echo "-------- Running SonarQube Analysis --------"
+                        $SONAR_SCANNER_HOME/bin/sonar-scanner \
+                            -Dsonar.projectKey=datastore \
+                            -Dsonar.projectName=datastore \
+                            -Dsonar.sources=src/main/java \
+                            -Dsonar.java.binaries=target/classes \
+                            -Dsonar.tests=src/test/java \
+                            -Dsonar.junit.reportPaths=target/surefire-reports
+                        echo "-------- SonarQube Analysis Completed --------"
+                    '''
+                }
+            }
+        }
+
+        stage("SonarQube Quality Gate") {
+            agent none
+            steps {
+                timeout(time: 10, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage("Artifact Upload to S3") {
+            agent any
+            steps {
+                sh '''
+                    echo "-------- Uploading Artifact to S3 --------"
+                    aws s3 cp target/*.jar s3://data-store-bkt21/
+                    echo "-------- Upload Complete --------"
+                '''
+            }
+        }
+
+        stage("Docker Build") {
+            agent any
+            steps {
+                sh '''
+                    echo "-------- Building Docker Image --------"
+                    docker build -t datastore:${App_Version} .
+                    echo "-------- Docker Build Complete --------"
+                '''
+            }
+        }
+
+        stage("Docker Stages") {
+            agent any
+            stages {
+
+                stage("Docker Scan (Trivy)") {
+                    steps {
+                        sh '''
+                            echo "-------- Scanning Image --------"
+                            trivy image --scanners vuln --skip-db-update datastore:${App_Version} || true
+                            echo "-------- Scan Completed --------"
+                        '''
+                    }
+                }
+
+                stage("Docker Tag") {
+                    steps {
+                        sh '''
+                            echo "-------- Tagging Image for ECR --------"
+                            docker tag datastore:${App_Version} ${ECR_REPO}:${App_Version}
+                            echo "-------- Tagging Complete --------"
+                        '''
+                    }
+                }
+
+                stage("ECR Login & Push") {
+                    steps {
+                        sh '''
+                            echo "-------- Logging into AWS ECR --------"
+                            aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+                            echo "-------- Login Successful --------"
+
+                            echo "-------- Pushing Image to ECR --------"
+                            docker push ${ECR_REPO}:${App_Version}
+                            echo "-------- Push Completed --------"
+                        '''
+                    }
+                }
+
+                stage("Cleanup") {
+                    steps {
+                        sh '''
+                            echo "-------- Cleaning Docker Images --------"
+                            docker system prune -af
+                            echo "-------- Cleanup Done --------"
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage("Deployment Approval") {
+            agent none
+            steps {
+                input message: "Do you want to deploy?", ok: "Yes, Deploy"
+            }
+        }
+
+        stage("Trigger Deployment Job") {
+            agent any
+            steps {
+                build job: "KubernetesDeployment",
+                parameters: [
+                    string(name: "App_Name", value: "datastore-deploy"),
+                    string(name: "App_Version", value: "${App_Version}")
+                ]
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Pipeline executed successfully!"
+        }
+        failure {
+            echo "Pipeline failed. Check logs!"
+        }
+    }
+}
